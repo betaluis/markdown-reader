@@ -94,17 +94,20 @@ func main() {
 	// Open browser after a short delay to ensure server is ready
 	if !*noBrowser {
 		time.Sleep(500 * time.Millisecond)
-		url := fmt.Sprintf("http://localhost:%d", *port)
+		url := fmt.Sprintf("http://localhost:%d", server.GetPort())
 		if err := browser.OpenURL(url); err != nil {
 			log.Printf("Failed to open browser: %v", err)
 			log.Printf("Please open %s manually", url)
 		}
 	}
 
-	// Wait for interrupt signal
+	// Wait for interrupt signal or browser close
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	<-sigChan
-
-	log.Println("\nShutting down...")
+	select {
+	case <-sigChan:
+		log.Println("\nShutting down...")
+	case <-server.Done:
+		// Server already logged the disconnect message
+	}
 }

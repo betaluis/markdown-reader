@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"net"
 	"net/http"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -19,6 +21,7 @@ var (
 	}
 	clients   = make(map[*websocket.Conn]bool)
 	clientsMu sync.Mutex
+	hadClient bool // tracks whether we've ever had a WebSocket client
 )
 
 // Server holds the server state
@@ -26,32 +29,53 @@ type Server struct {
 	port     int
 	filepath string
 	tmpl     *template.Template
+	listener net.Listener
+	Done     chan struct{} // closed when all browser clients disconnect
+}
+
+// GetPort returns the port the server is configured to use
+func (s *Server) GetPort() int {
+	return s.port
 }
 
 // NewServer creates a new server instance
+// If the requested port is not available, it will try up to 10 alternative ports
 func NewServer(port int, filepath string) (*Server, error) {
 	tmpl, err := GetTemplate()
 	if err != nil {
 		return nil, err
 	}
 
+	// Try to find an available port by binding a listener directly
+	// This avoids the race condition of check-then-listen
+	listener, availablePort, err := findAvailablePort(port, 10)
+	if err != nil {
+		return nil, fmt.Errorf("port %d and next 9 ports are all in use: %v", port, err)
+	}
+
+	// Warn if we had to use a different port
+	if availablePort != port {
+		log.Printf("Port %d is in use, using port %d instead", port, availablePort)
+	}
+
 	return &Server{
-		port:     port,
+		port:     availablePort,
 		filepath: filepath,
 		tmpl:     tmpl,
+		listener: listener,
+		Done:     make(chan struct{}),
 	}, nil
 }
 
-// Start starts the HTTP server
+// Start starts the HTTP server using the pre-bound listener
 func (s *Server) Start() error {
 	http.HandleFunc("/", s.handleIndex)
 	http.HandleFunc("/ws", s.handleWebSocket)
 
-	addr := fmt.Sprintf(":%d", s.port)
-	log.Printf("Serving %s at http://localhost%s", filepath.Base(s.filepath), addr)
+	log.Printf("Serving %s at http://localhost:%d", filepath.Base(s.filepath), s.port)
 	log.Println("Press Ctrl+C to stop")
 
-	return http.ListenAndServe(addr, nil)
+	return http.Serve(s.listener, nil)
 }
 
 // handleIndex serves the rendered markdown HTML
@@ -87,14 +111,35 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	clientsMu.Lock()
 	clients[conn] = true
+	hadClient = true
 	clientsMu.Unlock()
 
 	// Keep connection alive and handle disconnection
 	defer func() {
 		clientsMu.Lock()
 		delete(clients, conn)
+		remaining := len(clients)
 		clientsMu.Unlock()
 		conn.Close()
+
+		// If no clients remain, wait briefly (for refreshes) then signal shutdown
+		if remaining == 0 {
+			go func() {
+				time.Sleep(2 * time.Second)
+				clientsMu.Lock()
+				count := len(clients)
+				clientsMu.Unlock()
+				if count == 0 {
+					log.Println("All browser clients disconnected, shutting down...")
+					select {
+					case <-s.Done:
+						// already closed
+					default:
+						close(s.Done)
+					}
+				}
+			}()
+		}
 	}()
 
 	// Read messages (ping/pong to keep connection alive)
@@ -118,4 +163,18 @@ func BroadcastReload() {
 			delete(clients, client)
 		}
 	}
+}
+
+// findAvailablePort tries to bind a listener starting from the given port.
+// It returns the held listener and the port it bound to, avoiding race conditions.
+func findAvailablePort(startPort int, maxAttempts int) (net.Listener, int, error) {
+	for i := 0; i < maxAttempts; i++ {
+		port := startPort + i
+		addr := fmt.Sprintf(":%d", port)
+		listener, err := net.Listen("tcp", addr)
+		if err == nil {
+			return listener, port, nil
+		}
+	}
+	return nil, 0, fmt.Errorf("no available port found between %d and %d", startPort, startPort+maxAttempts-1)
 }

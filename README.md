@@ -42,10 +42,11 @@ mdview <file.md>
 ```
 
 This will:
-1. Start a local server on port 3000
+1. Start a local server on port 3000 (auto-selects next available port if busy)
 2. Open your default browser
 3. Display the rendered markdown
 4. Watch for file changes and auto-reload
+5. Exit automatically when you close the browser tab
 
 ### Examples
 
@@ -100,7 +101,7 @@ mdview --version
 ### Project Structure
 
 ```
-local-md-reader/
+mdview/
 ├── main.go         # CLI parsing and orchestration
 ├── server.go       # HTTP server and WebSocket handler
 ├── renderer.go     # Markdown to HTML conversion
@@ -122,14 +123,16 @@ go run . examples/test.md
 mdview examples/test.md
 ```
 
+## Behavior
+
+- **Auto port selection** - If port 3000 is in use, mdview automatically tries ports 3001-3009
+- **Auto exit** - When you close the browser tab, mdview shuts down after a 2-second grace period (allowing for page refreshes). You can also press `Ctrl+C` to stop at any time.
+
 ## Troubleshooting
 
 **Browser doesn't open automatically:**
 - Check if `xdg-open` is available on Linux
 - Use the `--no-browser` flag and open `http://localhost:3000` manually
-
-**Port already in use:**
-- Use a different port: `mdview --port 8080 file.md`
 
 **File changes not detected:**
 - Some editors use atomic writes - save the file directly instead
